@@ -1,0 +1,134 @@
+HW#3 AllDefinedLogs.txt — 프로그램에서 남기는 모든 로그 메시지
+====================================================================
+
+공통 형식
+  [HH:MM:SS.mmm] NODE | EVENT | STATUS | message
+  - 시각: 실제 시각, KST(Asia/Seoul)
+  - NODE: COORD, WORKERi (i = 1~10), LAUNCHER
+  - STATUS: SUCCESS, FAIL, INFO, WARN
+  - 로그 파일: Coordinator.txt, Worker1.txt ~ Worker10.txt, Launcher.txt
+  - 아래 표기: {i} Worker 번호, {k} Task 번호, {e} epoch, {s} step, {v} 결과값, {p} partial
+  - 시각 t= 값은 START(Launcher는 t0) 기준 초, lastHB= 도 START 기준 초
+
+crash 한 주기 추적 방법
+  Launcher.txt  CRASH  #n victim=W{d}
+  Coordinator   SUSPECT W{d} → DEAD W{d} (owned, next_alive, dead_now) → TAKEOVER task={k} ... owner W{d}->W{b}
+  Worker{b}     TAKEOVER task={k} e{e} from W{d} ... resume step / start step 1 → RESULT → COMMIT(ACK)
+  Launcher.txt  RESTART W{d} → Worker{d} RESTART, REJOIN
+  Coordinator   REJOIN W{d} DEAD->ALIVE → ASSIGN task={k} e1 -> W{d} (first task after rejoin)
+
+
+====================================================================
+1. Coordinator.txt (NODE = COORD)
+====================================================================
+EVENT        STATUS   message                                                         언제
+INIT         SUCCESS  listening on {host}:{port}, waiting for 10 workers               시작
+CONNECT      INFO     new connection from {addr}                                       TCP 연결 수락
+CONNECT      SUCCESS  W{i} registered. peer={ip}:{port}                                HELLO 등록
+CONNECT      WARN     HELLO {i} ignored (after START | out of range | duplicate)       잘못된 HELLO
+CONNECT      WARN     W{i} connection closed (EOF)                                     실행 중 연결이 끊김 (종료 시는 기록 안 함)
+CONNECT      FAIL     listener error: {msg}                                            Listener 오류
+RING         SUCCESS  10/10 HELLO. RING sent (Wi -> W(i mod 10 + 1))                   10개 등록 후 RING 전송
+RING         SUCCESS  W{i} RING_OK (buddy connected)                                   RING_OK 수신
+START        SUCCESS  ring ready (10/10 RING_OK). START sent to 10 workers             START 전송 (시각 0)
+HB           INFO     received {n} HB in last 10s                                      10초마다 HB 요약
+HB           INFO     W{i} HB received again. SUSPECT->ALIVE                           SUSPECT 상태에서 HB 재수신
+SUSPECT      WARN     W{i} no HB for {x}s                                              HB 3초 이상 없음
+DEAD         INFO     W{d} no HB for {x}s (lastHB={t}). owned=[{k},...] next_alive=W{b} dead_now=[W..]
+                                                                                       HB 5초 이상 없음. owned = 그 순간 owner였던 Task(인계받은 것 포함),
+                                                                                       next_alive = 인계 대상, dead_now = 그 순간 DEAD 목록
+TAKEOVER     SUCCESS  task={k} epoch {e-1}->{e} owner W{d}->W{b}                       인계 (TAKEOVER 메시지 전송)
+ASSIGN       SUCCESS  task={k} e1 -> W{i}                                              REQ에 배정
+ASSIGN       SUCCESS  task={k} e1 -> W{i} (first task after rejoin)                    재합류 후 첫 배정
+ASSIGN       INFO     no pending task. NO_TASK -> W{i}                                 PENDING 소진
+ASSIGN       WARN     REQ before START ignored / REQ from DEAD W{i} ignored            무시한 REQ
+COMMIT       SUCCESS  task={k} e{e} by W{i} value={v} commit_count=1 (done {n}/1000)   유효한 RESULT 확정, ACK 전송
+REJECT_STALE WARN     task={k} e{e} from W{i} value={v} reason={DEAD|DONE|EPOCH} [(current e{x} owner W{y})]
+                                                                                       유효하지 않은 RESULT 거부
+RESULT       WARN     bad task number {k} from W{i}                                    범위 밖 Task 번호
+REJOIN       SUCCESS  W{i} DEAD->ALIVE rejoin_count={n}. WELCOME                       재합류 승인
+REJOIN       WARN     W{i} is not DEAD yet. RETRY_LATER                                DEAD 판정 전 REJOIN
+POOL         INFO     queue={n} pending={n} assigned={n} done={n} alive=[i,...]        5초마다 (Monitor Thread)
+VERIFY       SUCCESS  done=1000 commits=1000 double=0 sum=5761455 (running total=...) PASS
+VERIFY       FAIL     (같은 형식) FAIL                                                 검증 실패
+VERIFY       INFO     ===== HW#3 RESULT ===== 이하 요약 표                             처리량, 실행 시간, crash별 지표
+                      (# worker lastHB DEAD detect takeover(to) recover rejoin 1st_task after_rejoin)
+TERMINATE    INFO     send BYE to 10 workers                                           종료 시작 (BYE 전송 직전)
+TERMINATE    INFO     W{i} closed after BYE                                            BYE 뒤 정상 종료(EOF)
+TERMINATE    SUCCESS  all threads joined. coordinator exit                             종료 완료
+SEND         WARN     W{i} send failed: {msg} ({err})                                  전송 오류
+PARSE        WARN     unknown message from W{i}: {line} / D{n} bad message ...         형식 오류
+
+
+====================================================================
+2. Worker{i}.txt (NODE = WORKERi)
+====================================================================
+EVENT        STATUS   message                                                         언제
+INIT         INFO     worker {i} start. coord=.. peer=.. step_delay=..ms small_primes=1229
+CONNECT      SUCCESS  connected to coordinator. HELLO {i} {ip} {port}                  Coordinator 접속
+CONNECT      SUCCESS  launcher control connection                                      첫 메시지 LAUNCHER 수신
+CONNECT      WARN     launcher send failed: {err}
+CONNECT      FAIL     coordinator send failed / closed connection / connection error. exit
+                                                                                       Coordinator 연결 오류(치명적)
+RING         SUCCESS  buddy W{j} ({ip}:{port}) connected. RING_OK {i}                  Buddy 연결 후 RING_OK
+RING         SUCCESS  predecessor W{j} connected (CKPT link)                           첫 메시지 PEER j 수신
+START        SUCCESS  START received. state=RUNNING
+START        INFO     READY {i} sent to launcher                                       START 수신 + Launcher 연결 둘 다 된 순간
+ASSIGN       INFO     REQ {i} sent (local queue empty)                                 REQ 전송
+ASSIGN       SUCCESS  task={k} e{e} received. range=[lo, hi]                           ASSIGN 수신
+ASSIGN       INFO     NO_TASK. no more REQ, waiting for TAKEOVER or BYE
+TAKEOVER     SUCCESS  task={k} e{e} from W{d}. ckpt=(e{x}, step {s}, {p}) -> resume step {s+1}
+TAKEOVER     SUCCESS  task={k} e{e} from W{d}. no ckpt -> start step 1                 인계 수신 (CKPT 절약률 계산에 사용)
+RESULT       SUCCESS  task={k} e{e} value={v} [(resumed from step {s})]                RESULT 전송
+RESULT       WARN     task={k} not sent (crashed)                                      전송 직전 crash
+COMMIT       SUCCESS  ACK {k} (committed)                                              ACK 수신
+COMMIT       INFO     ACK {k} for unknown task. ignored                                rejoin 후 옛 Task의 ACK
+REJECT_STALE WARN     task={k} rejected. reason={reason}
+REJECT_STALE INFO     REJECT_STALE {k} {reason} for unknown task. ignored
+CKPT         INFO     last 10s: sent {n} to W{j}, received {m}                         10초마다 CKPT 송수신 요약
+CKPT         WARN     send to buddy W{j} failed: {err}                                 CKPT 전송 오류 (계산은 계속)
+CRASH        WARN     CRASH from launcher. cleared current=task {k} e{e} step {s}, queue={n}, store={m}. silent (connections kept)
+                                                                                       가상 crash. 비운 항목 수 기록
+RESTART      INFO     RESTART from launcher. state=REJOINING, queue/store empty
+REJOIN       INFO     REJOIN {i} sent / REJOIN {i} resent
+REJOIN       WARN     RETRY_LATER. resend REJOIN after 2s
+WELCOME      SUCCESS  rejoin accepted. state=RUNNING, HB resumed. REJOINED {i} -> launcher
+TERMINATE    SUCCESS  BYE received (state=..). results= ack= reject= ckpt_sent= ckpt_recv= ckpt_dropped= takeover= crashes=
+PARSE        WARN     unknown message: {line}
+
+
+====================================================================
+3. Launcher.txt (NODE = LAUNCHER)
+====================================================================
+EVENT        STATUS   message                                                         언제
+INIT         INFO     seed={seed} workers=10 coord=.. peer=..:7000+i step_delay=..ms chaos=on|off manual=on|off
+INIT         INFO     W{i} started (pid {pid}, peer port {port})                       Worker 프로세스 실행
+CONNECT      SUCCESS  control connection to W{i}                                       LAUNCHER 전송
+CONNECT      WARN     send to W{i} failed: {err}
+START        INFO     READY {i}
+START        SUCCESS  all READY (10/10) -> t=0. first crash at t={t}                   t0 확정
+CRASH        INFO     #{n} victim=W{i} (random from RUNNING=[..]) D={d}s t={t} down=[..]. next crash at t={t}
+                      (마지막은 ". next crash candidate t={t} > 80 -> no more crashes")
+CRASH        INFO     2 workers down [..]. wait for REJOINED                           동시 crash 상한
+CRASH        INFO     #{n} victim=W{i} (manual) t={t} down=[..]                        --manual 수동 crash
+CRASH        WARN     manual crash W{i} ignored (not RUNNING)
+RESTART      INFO     #{n} W{i} t={t} (down {d}s)                                      RESTART 전송
+RESTART      INFO     W{i} (manual) t={t}
+RESTART      WARN     manual restart W{i} ignored (not CRASHED)
+REJOIN       SUCCESS  REJOINED W{i} t={t} down=[..] [. unblocked, next crash at t={t}]  REJOINED 수신
+TERMINATE    INFO     W{i} control connection EOF -> EXITED [(scheduled RESTART canceled)]
+TERMINATE    INFO     ===== LAUNCHER SUMMARY ===== 이하 crash 표 (t0 기준 초 + 실제 시각)
+TERMINATE    SUCCESS  all workers EXITED. launcher exit
+
+
+====================================================================
+4. LogChecker (실행 후 검증, logs/check_result.txt)
+====================================================================
+[PASS|FAIL] 1. 1000 tasks DONE, sum of commit_count = 1000
+[PASS|FAIL] 2. sum = 5761455
+[PASS|FAIL] 3. launcher CRASH = coordinator DEAD = REJOIN
+[PASS|FAIL] 4. DEAD at any moment <= 2
+[PASS|FAIL] 5. new task after every rejoin
+[PASS|FAIL] 6. coordinator COMMIT = 1000 (worker ACK <= 1000)
+[PASS|FAIL] Coordinator VERIFY
+crash cycles 표: CRASH(launcher) → DEAD → TAKEOVER(재개 step) → REJOIN → ASSIGN after rejoin, CKPT saved
