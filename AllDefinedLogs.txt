@@ -31,7 +31,6 @@ CONNECT      FAIL     listener error: {msg}                                     
 RING         SUCCESS  10/10 HELLO. RING sent (Wi -> W(i mod 10 + 1))                   10개 등록 후 RING 전송
 RING         SUCCESS  W{i} RING_OK (buddy connected)                                   RING_OK 수신
 START        SUCCESS  ring ready (10/10 RING_OK). START sent to 10 workers             START 전송 (시각 0)
-HB           INFO     received {n} HB in last 10s                                      10초마다 HB 요약
 HB           INFO     W{i} HB received again. SUSPECT->ALIVE                           SUSPECT 상태에서 HB 재수신
 SUSPECT      WARN     W{i} no HB for {x}s                                              HB 3초 이상 없음
 DEAD         INFO     W{d} no HB for {x}s (lastHB={t}). owned=[{k},...] next_alive=W{b} dead_now=[W..]
@@ -42,13 +41,13 @@ ASSIGN       SUCCESS  task={k} e1 -> W{i}                                       
 ASSIGN       SUCCESS  task={k} e1 -> W{i} (first task after rejoin)                    재합류 후 첫 배정
 ASSIGN       INFO     no pending task. NO_TASK -> W{i}                                 PENDING 소진
 ASSIGN       WARN     REQ before START ignored / REQ from DEAD W{i} ignored            무시한 REQ
-COMMIT       SUCCESS  task={k} e{e} by W{i} value={v} commit_count=1 (done {n}/1000)   유효한 RESULT 확정, ACK 전송
+COMMIT       SUCCESS  task={k} e{e} by W{i} value={v} commit_count={c} (done {n}/1000)   유효한 RESULT 확정, ACK 전송
 REJECT_STALE WARN     task={k} e{e} from W{i} value={v} reason={DEAD|DONE|EPOCH} [(current e{x} owner W{y})]
                                                                                        유효하지 않은 RESULT 거부
 RESULT       WARN     bad task number {k} from W{i}                                    범위 밖 Task 번호
 REJOIN       SUCCESS  W{i} DEAD->ALIVE rejoin_count={n}. WELCOME                       재합류 승인
 REJOIN       WARN     W{i} is not DEAD yet. RETRY_LATER                                DEAD 판정 전 REJOIN
-POOL         INFO     queue={n} pending={n} assigned={n} done={n} alive=[i,...]        5초마다 (Monitor Thread)
+POOL         INFO     queue={n} pending={n} assigned={n} done={n} alive=[i,...]        5초마다 (Monitor Thread), alive = ALIVE 상태 Worker
 VERIFY       SUCCESS  done=1000 commits=1000 double=0 sum=5761455 (running total=...) PASS
 VERIFY       FAIL     (같은 형식) FAIL                                                 검증 실패
 VERIFY       INFO     ===== HW#3 RESULT ===== 이하 요약 표                             처리량, 실행 시간, crash별 지표
@@ -56,8 +55,8 @@ VERIFY       INFO     ===== HW#3 RESULT ===== 이하 요약 표                 
 TERMINATE    INFO     send BYE to 10 workers                                           종료 시작 (BYE 전송 직전)
 TERMINATE    INFO     W{i} closed after BYE                                            BYE 뒤 정상 종료(EOF)
 TERMINATE    SUCCESS  all threads joined. coordinator exit                             종료 완료
-SEND         WARN     W{i} send failed: {msg} ({err})                                  전송 오류
-PARSE        WARN     unknown message from W{i}: {line} / D{n} bad message ...         형식 오류
+CONNECT      WARN     W{i} send failed: {msg} ({err})                                  전송 오류
+CONNECT      WARN     unknown message from W{i}: {line} / D{n} bad message ...         형식 오류
 
 
 ====================================================================
@@ -94,7 +93,8 @@ REJOIN       INFO     REJOIN {i} sent / REJOIN {i} resent
 REJOIN       WARN     RETRY_LATER. resend REJOIN after 2s
 WELCOME      SUCCESS  rejoin accepted. state=RUNNING, HB resumed. REJOINED {i} -> launcher
 TERMINATE    SUCCESS  BYE received (state=..). results= ack= reject= ckpt_sent= ckpt_recv= ckpt_dropped= takeover= crashes=
-PARSE        WARN     unknown message: {line}
+CONNECT      WARN     unknown message: {line} / bad message: {line}                    Coordinator 메시지 형식 오류
+CKPT         WARN     bad CKPT: {line}                                                 CKPT 형식 오류
 
 
 ====================================================================

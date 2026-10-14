@@ -242,10 +242,10 @@ public class Worker {
                         case "NO_TASK" -> onNoTask();
                         case "WELCOME" -> onWelcome();
                         case "RETRY_LATER" -> onRetryLater();
-                        default -> log.warn("PARSE", "unknown message: " + line);
+                        default -> log.warn("CONNECT", "unknown message: " + line);
                     }
                 } catch (NumberFormatException | IndexOutOfBoundsException e) {
-                    log.warn("PARSE", "bad message: " + line);
+                    log.warn("CONNECT", "bad message: " + line);
                 }
             }
             log.fail("CONNECT", "coordinator closed connection. exit");
@@ -493,7 +493,7 @@ public class Worker {
                     try {
                         onCkpt(Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3]), Integer.parseInt(t[4]));
                     } catch (NumberFormatException | IndexOutOfBoundsException e) {
-                        log.warn("PARSE", "bad CKPT: " + line);
+                        log.warn("CKPT", "bad CKPT: " + line);
                     }
                 }
             } else if (first.equals("LAUNCHER")) {
