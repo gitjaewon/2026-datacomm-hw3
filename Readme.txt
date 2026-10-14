@@ -51,7 +51,7 @@ src/LogChecker.java   로그 12개를 읽어서 정합성 확인과 crash별 지
                       HB는 직접 lastHB 갱신, 나머지는 (Socket, 메시지)로 Request Queue에 넣음
   Dispatcher (6, 고정) Request Queue에서 HELLO, RING_OK, REQ, RESULT, REJOIN을 꺼내 처리
   Failure Detector (1) START 이후 1초마다 lastHB 검사 → SUSPECT / DEAD → TAKEOVER
-  Monitor (1)         5초마다 POOL 로그, 10초마다 HB 요약
+  Monitor (1)         5초마다 POOL 로그 (Request Queue 길이, PENDING/ASSIGNED/DONE 수, ALIVE 목록)
 
   공유 데이터와 보호
     Task Table [0..999]   Task마다 ReentrantLock (state, owner, epoch, result, commit_count)

@@ -8,7 +8,6 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -98,10 +97,8 @@ public class Coordinator {
     final ReentrantLock metricLock = new ReentrantLock();
     final List<CrashRec> crashes = new ArrayList<>();
     final CrashRec[] lastCrash = new CrashRec[N + 1];
-    final boolean[] stuck = new boolean[N + 1]; // FD 전용, wtLock 안에서만
     int deadTotal = 0, rejoinTotal = 0, takeoverTotal = 0, rejectTotal = 0, maxConcurrentDead = 0;
 
-    final AtomicInteger hbCount = new AtomicInteger();
     volatile long startNanos = 0;
     final Log log;
     final String host;
@@ -135,7 +132,7 @@ public class Coordinator {
         try {
             while (b.hasRemaining()) c.ch.write(b);
         } catch (IOException e) {
-            log.warn("SEND", "W" + c.id + " send failed: " + msg + " (" + e.getMessage() + ")");
+            log.warn("CONNECT", "W" + c.id + " send failed: " + msg + " (" + e.getMessage() + ")");
         } finally {
             c.sendLock.unlock();
         }
@@ -396,7 +393,6 @@ public class Coordinator {
     void onHB(Conn c) {
         int i = c.id;
         if (i == 0) return;
-        hbCount.incrementAndGet();
         boolean back = false;
         wtLock.lock();
         try {
@@ -422,7 +418,7 @@ public class Coordinator {
                 try {
                     handle(r.conn, r.line);
                 } catch (RuntimeException e) {
-                    log.warn("PARSE", "D" + id + " bad message from W" + r.conn.id + ": " + r.line);
+                    log.warn("CONNECT", "D" + id + " bad message from W" + r.conn.id + ": " + r.line);
                 }
             }
         } catch (InterruptedException ignored) {
@@ -437,7 +433,7 @@ public class Coordinator {
             case "REQ" -> onReq(c);
             case "RESULT" -> onResult(c, Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3]));
             case "REJOIN" -> onRejoin(c);
-            default -> log.warn("PARSE", "unknown message from W" + c.id + ": " + line);
+            default -> log.warn("CONNECT", "unknown message from W" + c.id + ": " + line);
         }
     }
 
@@ -547,7 +543,7 @@ public class Coordinator {
             wtLock.unlock();
         }
         String reason = null;
-        int curEpoch, curOwner;
+        int curEpoch, curOwner, cc = 0;
         Task task = tasks[k];
         if (senderDead) {
             reason = "DEAD";
@@ -564,6 +560,7 @@ public class Coordinator {
                     task.state = DONE;
                     task.result = v;
                     task.commitCount++;
+                    cc = task.commitCount;
                 }
             } finally {
                 task.lock.unlock();
@@ -606,7 +603,7 @@ public class Coordinator {
         } finally {
             metricLock.unlock();
         }
-        log.ok("COMMIT", "task=" + k + " e" + e + " by W" + sender + " value=" + v + " commit_count=1 (done " + count + "/1000)");
+        log.ok("COMMIT", "task=" + k + " e" + e + " by W" + sender + " value=" + v + " commit_count=" + cc + " (done " + count + "/1000)");
 
         // 마지막 Commit의 ACK와 로그가 나간 뒤에 Main을 깨운다
         if (count == TASKS) {
@@ -742,20 +739,9 @@ public class Coordinator {
                 for (int i = 1; i <= N; i++) if (workers[i].state == DEAD) deadList.add(i);
                 deadNow = deadList.size();
 
-                // 지난번에 넘길 곳이 없었던 Task가 있으면 다시 시도 (정상 실행에서는 생기지 않음)
-                for (int d = 1; d <= N; d++) {
-                    if (!stuck[d]) continue;
-                    int b = nextAlive(d);
-                    if (b > 0) {
-                        moveTasks(d, b, moved);
-                        stuck[d] = false;
-                    }
-                }
-
                 for (int d : newlyDead) {
                     int b = nextAlive(d);
                     List<Integer> owned = moveTasks(d, b, moved);
-                    if (b < 0 && !owned.isEmpty()) stuck[d] = true;
                     double gap = (now - workers[d].lastHB) / 1e9;
                     CrashRec cr = new CrashRec();
                     cr.worker = d;
@@ -802,9 +788,7 @@ public class Coordinator {
 
     void monitorLoop() {
         if (!waitStart()) return;
-        int ticks = 0;
         while (waitTick(5000)) {
-            ticks++;
             int queueLen, pend, done;
             StringBuilder alive = new StringBuilder();
             reqLock.lock();
@@ -817,7 +801,7 @@ public class Coordinator {
             try {
                 pend = pending.size();
                 for (int i = 1; i <= N; i++) {
-                    if (workers[i].state != DEAD) alive.append(alive.length() > 0 ? "," : "").append(i);
+                    if (workers[i].state == ALIVE) alive.append(alive.length() > 0 ? "," : "").append(i);
                 }
             } finally {
                 wtLock.unlock();
@@ -830,7 +814,6 @@ public class Coordinator {
             }
             log.info("POOL", String.format("queue=%d pending=%d assigned=%d done=%d alive=[%s]",
                     queueLen, pend, TASKS - pend - done, done, alive));
-            if (ticks % 2 == 0) log.info("HB", "received " + hbCount.getAndSet(0) + " HB in last 10s");
         }
     }
 
