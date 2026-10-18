@@ -51,7 +51,8 @@ src/LogChecker.java   로그 12개를 읽어서 정합성 확인과 crash별 지
                       HB는 직접 lastHB 갱신, 나머지는 (Socket, 메시지)로 Request Queue에 넣음
   Dispatcher (6, 고정) Request Queue에서 HELLO, RING_OK, REQ, RESULT, REJOIN을 꺼내 처리
   Failure Detector (1) START 이후 1초마다 lastHB 검사 → SUSPECT / DEAD → TAKEOVER
-  Monitor (1)         5초마다 POOL 로그 (Request Queue 길이, PENDING/ASSIGNED/DONE 수, ALIVE 목록)
+  Monitor (1)         5초마다 POOL 로그 (Request Queue 길이, PENDING/ASSIGNED/DONE 수, ALIVE 목록)와
+                      HB 요약 로그 (Worker별 최근 5초 HB 수신 수, ALIVE/SUSPECT/DEAD, 마지막 HB 이후 경과 초)
 
   공유 데이터와 보호
     Task Table [0..999]   Task마다 ReentrantLock (state, owner, epoch, result, commit_count)
@@ -70,9 +71,10 @@ src/LogChecker.java   로그 12개를 읽어서 정합성 확인과 crash별 지
   Heartbeat                   RUNNING일 때만 1초마다 HB, 10초마다 CKPT 송수신 요약 로그
   Peer Server                 Peer 포트 accept. 연결마다 읽기 Thread 1개
                               (첫 메시지 PEER i → 선행 Worker의 CKPT 연결, LAUNCHER → Launcher 제어 연결)
+  REJOIN 재전송 타이머         RETRY_LATER를 받으면 Thread 1개가 2초 뒤 아직 REJOINING일 때만 REJOIN 재전송
   공유 데이터: state + crash_gen + stopping (stateLock + Condition), 로컬 Task Queue + requested + no_task
               (qLock + Condition), Checkpoint Store (storeLock)
-  Lock 순서: qLock → stateLock → storeLock
+  Lock 순서: qLock → stateLock → storeLock, stateLock → 소켓 송신 Lock (반대 순서로 잡는 곳은 없음)
 
 3-3. Chaos Launcher
   Worker 10개를 독립 프로세스로 실행하고 각 Peer 포트에 제어 연결(첫 메시지 LAUNCHER, 거절 시 0.5초 후 재시도).
@@ -112,6 +114,7 @@ src/LogChecker.java   로그 12개를 읽어서 정합성 확인과 crash별 지
     5초 이상 HB 없음 → DEAD
   한 번의 검사에서 새로 DEAD가 된 Worker들은 먼저 모두 DEAD로 표시하고 번호순으로 인계한다.
   DEAD Worker의 HB는 무시한다. Coordinator는 Launcher와 통신하지 않는다.
+  Monitor가 5초마다 Worker별 HB 수신 수와 마지막 HB 이후 경과 시간을 HB 로그로 요약한다.
 
 4-2. Checkpoint
   Worker i는 step s(1~9)를 끝낼 때마다 고정 Buddy(i mod 10 + 1)에게 CKPT k e s partial을 보낸다.
@@ -147,6 +150,12 @@ src/LogChecker.java   로그 12개를 읽어서 정합성 확인과 crash별 지
   Compute는 Task를 꺼내는 순간의 crash_gen을 기억하고, step마다 그리고 CKPT / RESULT를 보내기 직전에
   state == RUNNING && crash_gen == 기억한 값인지 다시 확인한다(send_if_alive). 그래서 crash 이전 Task의
   CKPT나 RESULT가 crash 중이나 rejoin 후에 새어 나가지 않는다.
+  CRASH 처리와 겹치는 순간에도 상태가 새지 않도록
+    - send_if_alive는 stateLock을 잡은 채 확인과 전송을 함께 한다(HB, REQ, CKPT, RESULT 모두). 확인과 전송
+      사이에 CRASH가 끼어 crash 뒤에 메시지가 나가는 일이 없다
+    - ASSIGN, TAKEOVER는 qLock 안에서 CRASHED인지 다시 확인하고 Queue에 넣는다. CRASH가 Queue를 비운 뒤에
+      옛 Task가 다시 들어가지 않는다
+    - CKPT는 stateLock 안에서 CRASHED가 아님을 확인한 채 Store에 저장한다. CRASH로 비운 Store에 다시 쌓이지 않는다
 
 4-7. 설계 선택 사항
   RING / START 전송      Main Thread
@@ -171,7 +180,8 @@ REQ는 Queue가 완전히 비었을 때만 보낸다. 인계 Task의 CKPT와 RES
 (정식 실행 후 Coordinator.txt 마지막 VERIFY 요약과 logs/check_result.txt 내용을 여기에 붙인다)
 
 처리량 / 실행 시간 :
-# worker lastHB DEAD detect takeover(to) recover rejoin 1st_task CKPT 절약
+# worker lastHB DEAD 감지지연 takeover(to) 복구시간 rejoin 1st_task 재합류지연 rejoin후Task수 CKPT절약
+  (Coordinator 요약의 1st_task "(x.xxs)" = 재합류 지연, after_rejoin = rejoin 후 처리 Task 수, CKPT 절약은 check_result.txt)
 
 
 정합성 확인 방법 (LogChecker)
