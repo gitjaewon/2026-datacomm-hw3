@@ -172,24 +172,34 @@ public class Worker {
         }
     }
 
-    // 확인과 전송 사이에 crash가 끼지 않게: 보내기 직전에 상태와 세대를 다시 본다
+    // 확인과 전송 사이에 crash가 끼지 않게: stateLock을 잡은 채 확인하고 보낸다
     boolean sendIfAlive(int gen, Out target, String msg) {
         stateLock.lock();
         try {
             if (state != RUNNING || crashGen != gen) return false;
+            if (target == coord) {
+                sendCoord(msg);
+            } else {
+                try {
+                    target.send(msg);
+                } catch (IOException e) {
+                    log.warn("CKPT", "send to buddy W" + buddyId + " failed: " + e.getMessage());
+                }
+            }
+            return true;
         } finally {
             stateLock.unlock();
         }
-        if (target == coord) {
-            sendCoord(msg);
-        } else {
-            try {
-                target.send(msg);
-            } catch (IOException e) {
-                log.warn("CKPT", "send to buddy W" + buddyId + " failed: " + e.getMessage());
-            }
+    }
+
+    // qLock 안에서 호출. CRASH가 Queue를 비운 뒤에 옛 Task가 다시 들어가지 않게 한다
+    boolean crashedNow() {
+        stateLock.lock();
+        try {
+            return state == CRASHED;
+        } finally {
+            stateLock.unlock();
         }
-        return true;
     }
 
     void checkReady() {
@@ -294,6 +304,7 @@ public class Worker {
     void onAssign(int k, int e) {
         qLock.lock();
         try {
+            if (crashedNow()) return; // 확인 직후 crash된 경우 버림
             localQ.add(new Item(k, e, 1, 0));
             requested = false; // 안 내리면 다음 REQ를 못 보냄
             qCond.signalAll();
@@ -307,6 +318,7 @@ public class Worker {
         Ckpt ck;
         qLock.lock();
         try {
+            if (crashedNow()) return; // 확인 직후 crash된 경우 버림
             storeLock.lock();
             try {
                 ck = store.get(k);
@@ -518,6 +530,7 @@ public class Worker {
         }
     }
 
+    // stateLock을 잡은 채 저장해서 CRASH가 비운 Store에 CKPT가 다시 들어가지 않게 한다 (stateLock -> storeLock)
     void onCkpt(int k, int e, int s, int partial) {
         stateLock.lock();
         try {
@@ -527,15 +540,15 @@ public class Worker {
             }
             ckptRecv++;
             ckptRecvWindow++;
+            storeLock.lock();
+            try {
+                Ckpt old = store.get(k);
+                if (old == null || e > old.e || (e == old.e && s > old.s)) store.put(k, new Ckpt(e, s, partial));
+            } finally {
+                storeLock.unlock();
+            }
         } finally {
             stateLock.unlock();
-        }
-        storeLock.lock();
-        try {
-            Ckpt old = store.get(k);
-            if (old == null || e > old.e || (e == old.e && s > old.s)) store.put(k, new Ckpt(e, s, partial));
-        } finally {
-            storeLock.unlock();
         }
     }
 
