@@ -43,6 +43,7 @@ public class Coordinator {
         int state = ALIVE;
         long lastHB;
         int rejoinCount = 0;
+        int hbWindow = 0; // 직전 HB 요약 이후 받은 HB 수
         Conn conn;
         String peerIp;
         int peerPort;
@@ -399,6 +400,7 @@ public class Coordinator {
             WorkerEntry w = workers[i];
             if (w.state == DEAD) return;
             w.lastHB = System.nanoTime();
+            w.hbWindow++;
             if (w.state == SUSPECT) {
                 w.state = ALIVE;
                 back = true;
@@ -791,6 +793,7 @@ public class Coordinator {
         while (waitTick(5000)) {
             int queueLen, pend, done;
             StringBuilder alive = new StringBuilder();
+            StringBuilder hb = new StringBuilder();
             reqLock.lock();
             try {
                 queueLen = reqQueue.size();
@@ -800,8 +803,14 @@ public class Coordinator {
             wtLock.lock();
             try {
                 pend = pending.size();
+                long now = System.nanoTime();
                 for (int i = 1; i <= N; i++) {
-                    if (workers[i].state == ALIVE) alive.append(alive.length() > 0 ? "," : "").append(i);
+                    WorkerEntry w = workers[i];
+                    if (w.state == ALIVE) alive.append(alive.length() > 0 ? "," : "").append(i);
+                    if (hb.length() > 0) hb.append(' ');
+                    hb.append(String.format("W%d=%d(%s,%.1fs)", i, w.hbWindow,
+                            w.state == ALIVE ? "A" : w.state == SUSPECT ? "S" : "D", (now - w.lastHB) / 1e9));
+                    w.hbWindow = 0;
                 }
             } finally {
                 wtLock.unlock();
@@ -814,6 +823,7 @@ public class Coordinator {
             }
             log.info("POOL", String.format("queue=%d pending=%d assigned=%d done=%d alive=[%s]",
                     queueLen, pend, TASKS - pend - done, done, alive));
+            log.info("HB", "last 5s: " + hb);
         }
     }
 
