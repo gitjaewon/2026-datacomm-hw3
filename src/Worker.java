@@ -73,6 +73,9 @@ public class Worker {
     final Condition stateCond = stateLock.newCondition();
     int state = CONNECTING;
     int crashGen = 0;
+    // 송신 중에는 공유 상태 Lock을 놓는다. CRASH는 승인된 송신이 끝난 뒤 확정한다.
+    boolean crashPending = false;
+    int activeSends = 0;
     boolean stopping = false;
     boolean startReceived = false, launcherConnected = false, readySent = false;
 
@@ -172,24 +175,39 @@ public class Worker {
         }
     }
 
-    // 확인과 전송 사이에 crash가 끼지 않게: 보내기 직전에 상태와 세대를 다시 본다
+    // Socket 송신 차례를 얻은 뒤 승인한다. CRASH 대기 중에는 새 송신을 승인하지 않는다.
     boolean sendIfAlive(int gen, Out target, String msg) {
-        stateLock.lock();
+        target.lock.lock();
         try {
-            if (state != RUNNING || crashGen != gen) return false;
-        } finally {
-            stateLock.unlock();
-        }
-        if (target == coord) {
-            sendCoord(msg);
-        } else {
+            stateLock.lock();
+            try {
+                if (state != RUNNING || crashPending || stopping || crashGen != gen) return false;
+                activeSends++;
+            } finally {
+                stateLock.unlock();
+            }
             try {
                 target.send(msg);
             } catch (IOException e) {
-                log.warn("CKPT", "send to buddy W" + buddyId + " failed: " + e.getMessage());
+                if (target == coord) {
+                    log.fail("CONNECT", "coordinator send failed: " + e.getMessage() + ". exit");
+                    System.exit(1);
+                } else {
+                    log.warn("CKPT", "send to buddy W" + buddyId + " failed: " + e.getMessage());
+                }
+            } finally {
+                stateLock.lock();
+                try {
+                    activeSends--;
+                    stateCond.signalAll();
+                } finally {
+                    stateLock.unlock();
+                }
             }
+            return true;
+        } finally {
+            target.lock.unlock();
         }
-        return true;
     }
 
     void checkReady() {
@@ -543,10 +561,14 @@ public class Worker {
         int qn, sn;
         stateLock.lock();
         try {
-            if (state == CRASHED) return;
+            if (state == CRASHED || crashPending) return;
+            crashPending = true;
+            // await는 stateLock을 놓으므로 송신 완료와 HB/Compute 상태 확인을 막지 않는다.
+            while (activeSends > 0) stateCond.awaitUninterruptibly();
             state = CRASHED;
             crashGen++;
             crashCount++;
+            crashPending = false;
         } finally {
             stateLock.unlock();
         }
