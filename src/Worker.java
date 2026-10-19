@@ -218,6 +218,20 @@ public class Worker {
         }
     }
 
+    int messageGeneration() {
+        stateLock.lock();
+        try {
+            return state == CRASHED ? -1 : crashGen;
+        } finally {
+            stateLock.unlock();
+        }
+    }
+
+    // stateLock 안에서만 호출: 수신 뒤 crash/rejoin을 거친 메시지도 버린다.
+    boolean acceptsMessage(int gen) {
+        return gen >= 0 && state != CRASHED && crashGen == gen;
+    }
+
     // Coordinator 메시지 처리
     void controlRecvLoop(BufferedReader in) {
         try {
@@ -230,17 +244,18 @@ public class Worker {
                     onBye();
                     return;
                 }
-                if (getState() == CRASHED) continue; // crash 중에는 읽고 버림
+                int gen = messageGeneration();
+                if (gen < 0) continue; // crash 중에는 읽고 버림
                 try {
                     switch (t[0]) {
                         case "RING" -> onRing(Integer.parseInt(t[1]), t[2], Integer.parseInt(t[3]));
                         case "START" -> onStart();
-                        case "ASSIGN" -> onAssign(Integer.parseInt(t[1]), Integer.parseInt(t[2]));
-                        case "TAKEOVER" -> onTakeover(Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3].substring(5)));
-                        case "ACK" -> onAck(Integer.parseInt(t[1]));
-                        case "REJECT_STALE" -> onReject(Integer.parseInt(t[1]), t[2]);
-                        case "NO_TASK" -> onNoTask();
-                        case "WELCOME" -> onWelcome();
+                        case "ASSIGN" -> onAssign(Integer.parseInt(t[1]), Integer.parseInt(t[2]), gen);
+                        case "TAKEOVER" -> onTakeover(Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3].substring(5)), gen);
+                        case "ACK" -> onAck(Integer.parseInt(t[1]), gen);
+                        case "REJECT_STALE" -> onReject(Integer.parseInt(t[1]), t[2], gen);
+                        case "NO_TASK" -> onNoTask(gen);
+                        case "WELCOME" -> onWelcome(gen);
                         case "RETRY_LATER" -> onRetryLater();
                         default -> log.warn("CONNECT", "unknown message: " + line);
                     }
@@ -292,21 +307,34 @@ public class Worker {
     }
 
     void onAssign(int k, int e) {
+        onAssign(k, e, messageGeneration());
+    }
+
+    void onAssign(int k, int e, int gen) {
         qLock.lock();
+        stateLock.lock();
         try {
+            if (!acceptsMessage(gen)) return;
             localQ.add(new Item(k, e, 1, 0));
             requested = false; // 안 내리면 다음 REQ를 못 보냄
             qCond.signalAll();
         } finally {
+            stateLock.unlock();
             qLock.unlock();
         }
         log.ok("ASSIGN", "task=" + k + " e" + e + " received. range=[" + Primes.stepLo(k, 1) + ", " + (Primes.stepLo(k, 10) + 9999) + "]");
     }
 
     void onTakeover(int k, int e, int from) {
+        onTakeover(k, e, from, messageGeneration());
+    }
+
+    void onTakeover(int k, int e, int from, int gen) {
         Ckpt ck;
         qLock.lock();
+        stateLock.lock();
         try {
+            if (!acceptsMessage(gen)) return;
             storeLock.lock();
             try {
                 ck = store.get(k);
@@ -315,15 +343,11 @@ public class Worker {
             }
             if (ck != null) localQ.add(new Item(k, e, ck.s + 1, ck.partial));
             else localQ.add(new Item(k, e, 1, 0));
+            takeoverCount++;
             qCond.signalAll();
         } finally {
-            qLock.unlock();
-        }
-        stateLock.lock();
-        try {
-            takeoverCount++;
-        } finally {
             stateLock.unlock();
+            qLock.unlock();
         }
         if (ck != null)
             log.ok("TAKEOVER", String.format("task=%d e%d from W%d. ckpt=(e%d, step %d, %d) -> resume step %d",
@@ -333,62 +357,77 @@ public class Worker {
     }
 
     void onAck(int k) {
+        onAck(k, messageGeneration());
+    }
+
+    void onAck(int k, int gen) {
         boolean known;
         qLock.lock();
+        stateLock.lock();
         try {
+            if (!acceptsMessage(gen)) return;
             known = waitingAck.remove(k);
+            if (known) ackCount++;
         } finally {
+            stateLock.unlock();
             qLock.unlock();
         }
         if (!known) {
             log.info("COMMIT", "ACK " + k + " for unknown task. ignored");
             return;
         }
-        stateLock.lock();
-        try {
-            ackCount++;
-        } finally {
-            stateLock.unlock();
-        }
         log.ok("COMMIT", "ACK " + k + " (committed)");
     }
 
     void onReject(int k, String reason) {
+        onReject(k, reason, messageGeneration());
+    }
+
+    void onReject(int k, String reason, int gen) {
         boolean known;
         qLock.lock();
+        stateLock.lock();
         try {
+            if (!acceptsMessage(gen)) return;
             known = waitingAck.remove(k);
+            if (known) rejectCount++;
         } finally {
+            stateLock.unlock();
             qLock.unlock();
         }
         if (!known) {
             log.info("REJECT_STALE", "REJECT_STALE " + k + " " + reason + " for unknown task. ignored");
             return;
         }
-        stateLock.lock();
-        try {
-            rejectCount++;
-        } finally {
-            stateLock.unlock();
-        }
         log.warn("REJECT_STALE", "task=" + k + " rejected. reason=" + reason);
     }
 
     void onNoTask() {
+        onNoTask(messageGeneration());
+    }
+
+    void onNoTask(int gen) {
         qLock.lock();
+        stateLock.lock();
         try {
+            if (!acceptsMessage(gen)) return;
             noTask = true;
             requested = false;
         } finally {
+            stateLock.unlock();
             qLock.unlock();
         }
         log.info("ASSIGN", "NO_TASK. no more REQ, waiting for TAKEOVER or BYE");
     }
 
     void onWelcome() {
+        onWelcome(messageGeneration());
+    }
+
+    void onWelcome(int gen) {
         stateLock.lock();
         try {
-            if (state != REJOINING) return;
+            if (!acceptsMessage(gen) || state != REJOINING) return;
             state = RUNNING;
             stateCond.signalAll();
         } finally {
@@ -488,10 +527,11 @@ public class Worker {
                 log.ok("RING", "predecessor W" + first.substring(5) + " connected (CKPT link)");
                 String line;
                 while ((line = in.readLine()) != null) {
+                    int gen = messageGeneration();
                     String[] t = line.trim().split(" ");
                     if (!t[0].equals("CKPT")) continue;
                     try {
-                        onCkpt(Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3]), Integer.parseInt(t[4]));
+                        onCkpt(Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3]), Integer.parseInt(t[4]), gen);
                     } catch (NumberFormatException | IndexOutOfBoundsException e) {
                         log.warn("CKPT", "bad CKPT: " + line);
                     }
@@ -519,23 +559,27 @@ public class Worker {
     }
 
     void onCkpt(int k, int e, int s, int partial) {
+        onCkpt(k, e, s, partial, messageGeneration());
+    }
+
+    void onCkpt(int k, int e, int s, int partial, int gen) {
         stateLock.lock();
         try {
-            if (state == CRASHED) {
+            if (!acceptsMessage(gen)) {
                 ckptDropped++;
                 return;
             }
             ckptRecv++;
             ckptRecvWindow++;
+            storeLock.lock();
+            try {
+                Ckpt old = store.get(k);
+                if (old == null || e > old.e || (e == old.e && s > old.s)) store.put(k, new Ckpt(e, s, partial));
+            } finally {
+                storeLock.unlock();
+            }
         } finally {
             stateLock.unlock();
-        }
-        storeLock.lock();
-        try {
-            Ckpt old = store.get(k);
-            if (old == null || e > old.e || (e == old.e && s > old.s)) store.put(k, new Ckpt(e, s, partial));
-        } finally {
-            storeLock.unlock();
         }
     }
 
@@ -681,9 +725,12 @@ public class Worker {
                 current = "none";
                 if (!finished) continue;
                 qLock.lock();
+                stateLock.lock();
                 try {
+                    if (state != RUNNING || crashGen != gen) continue;
                     waitingAck.add(it.k);
                 } finally {
+                    stateLock.unlock();
                     qLock.unlock();
                 }
                 // ACK가 먼저 찍히지 않게 로그를 먼저 남긴다
