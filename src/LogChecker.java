@@ -36,7 +36,6 @@ public class LogChecker {
 
     static List<L> read(Path p) throws IOException {
         List<L> list = new ArrayList<>();
-        if (!Files.exists(p)) return list;
         long dayOffset = 0, prev = 0;
         for (String s : Files.readAllLines(p, StandardCharsets.UTF_8)) {
             Matcher m = LINE.matcher(s);
@@ -65,15 +64,42 @@ public class LogChecker {
     }
 
     void run(Path dir) throws IOException {
-        List<L> coord = read(dir.resolve("Coordinator.txt"));
-        List<L> launcher = read(dir.resolve("Launcher.txt"));
-        Map<Integer, List<L>> workers = new HashMap<>();
-        for (int i = 1; i <= 10; i++) workers.put(i, read(dir.resolve("Worker" + i + ".txt")));
-        if (coord.isEmpty()) {
-            System.out.println("Coordinator.txt not found in " + dir);
+        out.clear();
+        allPass = true;
+        out.add("log dir: " + dir.toAbsolutePath());
+        Map<String, List<L>> logs = new HashMap<>();
+        List<String> problems = new ArrayList<>();
+        Map<String, String> required = new LinkedHashMap<>();
+        required.put("Coordinator.txt", "COORD");
+        required.put("Launcher.txt", "LAUNCHER");
+        for (int i = 1; i <= 10; i++) required.put("Worker" + i + ".txt", "WORKER" + i);
+        for (Map.Entry<String, String> entry : required.entrySet()) {
+            Path file = dir.resolve(entry.getKey());
+            if (!Files.isRegularFile(file)) {
+                problems.add(entry.getKey() + " missing or not a regular file");
+                continue;
+            }
+            try {
+                List<L> lines = read(file);
+                if (lines.isEmpty()) problems.add(entry.getKey() + " empty or no valid log entries");
+                else if (lines.stream().anyMatch(line -> !line.node.equals(entry.getValue())))
+                    problems.add(entry.getKey() + " contains an unexpected NODE");
+                else logs.put(entry.getKey(), lines);
+            } catch (IOException e) {
+                problems.add(entry.getKey() + " unreadable: " + e.getMessage());
+            }
+        }
+        check("0. required logs (12 files)", problems.isEmpty(),
+                problems.isEmpty() ? "all logs present with valid NODE entries" : String.join("; ", problems));
+        if (!problems.isEmpty()) {
+            out.add("CKPT savings not calculated: required logs are incomplete.");
+            writeResult(dir);
             return;
         }
-        out.add("log dir: " + dir.toAbsolutePath());
+        List<L> coord = logs.get("Coordinator.txt");
+        List<L> launcher = logs.get("Launcher.txt");
+        Map<Integer, List<L>> workers = new HashMap<>();
+        for (int i = 1; i <= 10; i++) workers.put(i, logs.get("Worker" + i + ".txt"));
 
         // 1, 2, 6: COMMIT
         Map<Integer, Integer> commitTimes = new HashMap<>();
@@ -217,10 +243,14 @@ public class LogChecker {
                     c.assign < 0 ? "-" : clock(c.assign) + " task " + c.assignTask, ratio));
         }
         out.add(String.format("total CKPT saved = %d/%d", savedTotal, movedTotal * 10));
+        writeResult(dir);
+    }
+
+    void writeResult(Path dir) throws IOException {
         out.add("");
         out.add(allPass ? "RESULT: ALL PASS" : "RESULT: FAIL");
-
         for (String s : out) System.out.println(s);
+        Files.createDirectories(dir);
         try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(dir.resolve("check_result.txt"), StandardCharsets.UTF_8))) {
             for (String s : out) pw.println(s);
         }
@@ -238,6 +268,8 @@ public class LogChecker {
     }
 
     public static void main(String[] args) throws IOException {
-        new LogChecker().run(Path.of(args.length > 0 ? args[0] : "logs"));
+        LogChecker checker = new LogChecker();
+        checker.run(Path.of(args.length > 0 ? args[0] : "logs"));
+        if (!checker.allPass) System.exit(1);
     }
 }
