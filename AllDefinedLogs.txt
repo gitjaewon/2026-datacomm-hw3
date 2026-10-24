@@ -32,6 +32,9 @@ RING         SUCCESS  10/10 HELLO. RING sent (Wi -> W(i mod 10 + 1))            
 RING         SUCCESS  W{i} RING_OK (buddy connected)                                   RING_OK 수신
 START        SUCCESS  ring ready (10/10 RING_OK). START sent to 10 workers             START 전송 (시각 0)
 HB           INFO     W{i} HB received again. SUSPECT->ALIVE                           SUSPECT 상태에서 HB 재수신
+HB           INFO     last 5s: W{i}={n}({A|S|D},{x}s) ...                              5초마다 HB 요약 (POOL 직후, Monitor Thread).
+                                                                                       n = 최근 5초 HB 수신 수, A/S/D = ALIVE/SUSPECT/DEAD,
+                                                                                       x = 마지막 HB 이후 경과 초
 SUSPECT      WARN     W{i} no HB for {x}s                                              HB 3초 이상 없음
 DEAD         INFO     W{d} no HB for {x}s (lastHB={t}). owned=[{k},...] next_alive=W{b} dead_now=[W..]
                                                                                        HB 5초 이상 없음. owned = 그 순간 owner였던 Task(인계받은 것 포함),

@@ -51,7 +51,8 @@ src/LogChecker.java   로그 12개를 읽어서 정합성 확인과 crash별 지
                       HB는 직접 lastHB 갱신, 나머지는 (Socket, 메시지)로 Request Queue에 넣음
   Dispatcher (6, 고정) Request Queue에서 HELLO, RING_OK, REQ, RESULT, REJOIN을 꺼내 처리
   Failure Detector (1) START 이후 1초마다 lastHB 검사 → SUSPECT / DEAD → TAKEOVER
-  Monitor (1)         5초마다 POOL 로그 (Request Queue 길이, PENDING/ASSIGNED/DONE 수, ALIVE 목록)
+  Monitor (1)         5초마다 POOL 로그 (Request Queue 길이, PENDING/ASSIGNED/DONE 수, ALIVE 목록)와
+                      HB 요약 로그 (Worker별 최근 5초 HB 수신 수, ALIVE/SUSPECT/DEAD, 마지막 HB 이후 경과 초)
 
   공유 데이터와 보호
     Task Table [0..999]   Task마다 ReentrantLock (state, owner, epoch, result, commit_count)
@@ -112,6 +113,7 @@ src/LogChecker.java   로그 12개를 읽어서 정합성 확인과 crash별 지
     5초 이상 HB 없음 → DEAD
   한 번의 검사에서 새로 DEAD가 된 Worker들은 먼저 모두 DEAD로 표시하고 번호순으로 인계한다.
   DEAD Worker의 HB는 무시한다. Coordinator는 Launcher와 통신하지 않는다.
+  Monitor가 5초마다 Worker별 HB 수신 수와 마지막 HB 이후 경과 시간을 HB 로그로 요약한다.
 
 4-2. Checkpoint
   Worker i는 step s(1~9)를 끝낼 때마다 고정 Buddy(i mod 10 + 1)에게 CKPT k e s partial을 보낸다.
