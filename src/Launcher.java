@@ -66,14 +66,17 @@ public class Launcher {
         for (int i = 1; i <= n; i++) restartAt[i] = -1;
     }
 
+    // t0 기준 경과 초
     double rel() {
         return (System.nanoTime() - t0) / 1e9;
     }
 
+    // lo ~ hi 사이 난수
     double uniform(double lo, double hi) {
         return lo + (hi - lo) * rng.nextDouble();
     }
 
+    // crash 중인 Worker 목록
     String downList() {
         StringBuilder sb = new StringBuilder();
         for (int i = 1; i <= n; i++) {
@@ -82,12 +85,14 @@ public class Launcher {
         return "[" + sb + "]";
     }
 
+    // crash 중인 Worker 수
     int downCount() {
         int c = 0;
         for (int i = 1; i <= n; i++) if (status[i] == CRASHED || status[i] == REJOINING) c++;
         return c;
     }
 
+    // Worker에게 명령 전송
     void send(int i, String msg) {
         try {
             synchronized (ctrl[i]) {
@@ -99,6 +104,7 @@ public class Launcher {
         }
     }
 
+    // Worker 실행, READY 10개 대기 후 장애 스케줄 시작
     void run() throws Exception {
         log.info("INIT", String.format("seed=%d workers=%d coord=%s peer=%s:%d+i step_delay=%dms chaos=%s manual=%s",
                 seed, n, coord, peerIp, peerBase, stepDelay, chaos ? "on" : "off", manual ? "on" : "off"));
@@ -128,6 +134,7 @@ public class Launcher {
         log.close();
     }
 
+    // Worker 프로세스 10개 실행
     void startWorkers() throws IOException {
         String java = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
         String cp = System.getProperty("java.class.path");
@@ -145,6 +152,7 @@ public class Launcher {
         }
     }
 
+    // Worker Peer 포트에 제어 연결
     void connectWorker(int i) throws InterruptedException, IOException {
         Socket s = Worker.connectRetry(peerIp, peerBase + i);
         ctrl[i] = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8));
@@ -156,6 +164,7 @@ public class Launcher {
         t.start();
     }
 
+    // READY·REJOINED 수신, 연결이 끊기면 EXITED
     void readWorker(int i, Socket s) {
         try {
             BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
@@ -190,6 +199,7 @@ public class Launcher {
         log.info("TERMINATE", "W" + i + " control connection EOF -> EXITED" + msg);
     }
 
+    // REJOINED: RUNNING으로 바꾸고 대기 중이던 crash 재개
     void onRejoined(int i) {
         String msg;
         lock.lock();
@@ -221,7 +231,7 @@ public class Launcher {
         log.ok("REJOIN", "REJOINED " + msg);
     }
 
-    // 주 스케줄 루프. RESTART 시각과 다음 CRASH 시각 중 가까운 쪽까지 CV로 잔다
+    // RESTART와 CRASH 시각을 기다리며 장애 주입
     void schedule() throws InterruptedException {
         lock.lock();
         try {
@@ -281,7 +291,7 @@ public class Launcher {
         }
     }
 
-    // lock을 잡은 상태로 호출됨
+    // RUNNING 중 무작위 Worker를 crash
     void crashRandom(double now) {
         List<Integer> running = new ArrayList<>();
         for (int i = 1; i <= n; i++) if (status[i] == RUNNING) running.add(i);
@@ -323,7 +333,7 @@ public class Launcher {
         }
     }
 
-    // --manual: 콘솔에서 "crash 4", "restart 4" 입력 (개발용)
+    // --manual: 콘솔 명령 읽기
     void consoleLoop() {
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
         try {
@@ -345,6 +355,7 @@ public class Launcher {
         }
     }
 
+    // 수동 crash
     void manualCrash(int i) {
         String msg;
         lock.lock();
@@ -376,6 +387,7 @@ public class Launcher {
         log.info("CRASH", msg);
     }
 
+    // 수동 restart
     void manualRestart(int i) {
         String msg;
         lock.lock();
@@ -405,6 +417,7 @@ public class Launcher {
         log.info("RESTART", msg);
     }
 
+    // crash 기록 요약 출력
     void writeSummary() {
         List<String> lines = new ArrayList<>();
         lines.add("===== LAUNCHER SUMMARY (seed=" + seed + ") =====");
@@ -427,6 +440,7 @@ public class Launcher {
         for (String l : lines) log.info("TERMINATE", l);
     }
 
+    // 실행 인자 읽고 시작
     public static void main(String[] args) throws Exception {
         String coord = "127.0.0.1:8000";
         int workers = 10;

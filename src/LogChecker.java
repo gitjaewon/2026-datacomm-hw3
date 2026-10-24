@@ -7,8 +7,6 @@ import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-// 실행이 끝난 뒤 로그 12개를 읽어서 정합성 6가지와 crash별 지표를 확인한다
-// java LogChecker logs
 public class LogChecker {
     static final Pattern LINE = Pattern.compile("^\\[(\\d\\d):(\\d\\d):(\\d\\d)\\.(\\d{3})\\] (\\S+) \\| (\\S+)\\s*\\| (\\S+)\\s*\\| (.*)$");
     static final Pattern COMMIT = Pattern.compile("task=(\\d+) e(\\d+) by W(\\d+) value=(\\d+)");
@@ -28,12 +26,13 @@ public class LogChecker {
         int no, worker;
         long launcherCrash = -1, dead = -1, rejoin = -1, assign = -1;
         int assignTask = -1;
-        List<int[]> moved = new ArrayList<>(); // {k, newEpoch, to}
+        List<int[]> moved = new ArrayList<>();
     }
 
     final List<String> out = new ArrayList<>();
     boolean allPass = true;
 
+    // 로그 파일 읽기
     static List<L> read(Path p) throws IOException {
         List<L> list = new ArrayList<>();
         long dayOffset = 0, prev = 0;
@@ -43,7 +42,6 @@ public class LogChecker {
             L l = new L();
             l.ms = ((Long.parseLong(m.group(1)) * 60 + Long.parseLong(m.group(2))) * 60 + Long.parseLong(m.group(3))) * 1000
                     + Long.parseLong(m.group(4)) + dayOffset;
-            // 자정을 넘긴 실행: 시각이 크게 줄어들면 하루를 더한다
             if (l.ms < prev - 12 * 3600_000L) {
                 dayOffset += 24 * 3600_000L;
                 l.ms += 24 * 3600_000L;
@@ -58,11 +56,13 @@ public class LogChecker {
         return list;
     }
 
+    // 검사 결과 한 줄 기록
     void check(String name, boolean ok, String detail) {
         out.add(String.format("[%s] %s : %s", ok ? "PASS" : "FAIL", name, detail));
         if (!ok) allPass = false;
     }
 
+    // 로그 12개로 정합성 검사와 crash별 지표 계산
     void run(Path dir) throws IOException {
         out.clear();
         allPass = true;
@@ -101,7 +101,6 @@ public class LogChecker {
         Map<Integer, List<L>> workers = new HashMap<>();
         for (int i = 1; i <= 10; i++) workers.put(i, logs.get("Worker" + i + ".txt"));
 
-        // 1, 2, 6: COMMIT
         Map<Integer, Integer> commitTimes = new HashMap<>();
         long sum = 0;
         int commitLines = 0;
@@ -120,7 +119,6 @@ public class LogChecker {
                 "distinct tasks committed=" + commitTimes.size() + ", double commit=" + dbl);
         check("2. sum = 5761455", sum == 5761455, "sum of COMMIT values=" + sum);
 
-        // crash 기록
         List<Crash> crashes = new ArrayList<>();
         Map<Integer, Crash> openByWorker = new HashMap<>();
         int maxDead = 0, rejoinCount = 0;
@@ -158,13 +156,11 @@ public class LogChecker {
             }
         }
 
-        // 3: Launcher CRASH 수 = DEAD 수 = REJOIN 수
         List<L> lcrash = new ArrayList<>();
         for (L l : launcher) if (l.event.equals("CRASH") && L_CRASH.matcher(l.msg).find()) lcrash.add(l);
         check("3. launcher CRASH = coordinator DEAD = REJOIN",
                 lcrash.size() == crashes.size() && crashes.size() == rejoinCount,
                 "CRASH=" + lcrash.size() + ", DEAD=" + crashes.size() + ", REJOIN=" + rejoinCount);
-        // Launcher CRASH와 DEAD 짝짓기 (같은 Worker, CRASH 이후 첫 DEAD)
         boolean[] used = new boolean[crashes.size()];
         for (L l : lcrash) {
             Matcher m = L_CRASH.matcher(l.msg);
@@ -182,8 +178,6 @@ public class LogChecker {
 
         check("4. DEAD at any moment <= 2", maxDead <= 2, "max dead_now=" + maxDead);
 
-        // 5: crash마다 재합류 후 새 Task 수행 (남은 Task가 있으면)
-        // ASSIGN이 없으면 재합류 후 그 Worker에게 NO_TASK가 갔는지(남은 Task가 없었는지) 확인
         int noTaskAfter = 0, missing = 0;
         for (Crash c : crashes) {
             if (c.rejoin < 0) missing++;
@@ -209,7 +203,6 @@ public class LogChecker {
         for (L l : coord) if (l.event.equals("VERIFY") && l.msg.contains(" PASS")) verifyPass = true;
         check("Coordinator VERIFY", verifyPass, verifyPass ? "PASS line found" : "no PASS line");
 
-        // crash별 지표 + CKPT 절약률
         Map<String, Integer> resume = new HashMap<>();
         for (Map.Entry<Integer, List<L>> e : workers.entrySet()) {
             for (L l : e.getValue()) {
@@ -246,6 +239,7 @@ public class LogChecker {
         writeResult(dir);
     }
 
+    // 결과 출력, check_result.txt 저장
     void writeResult(Path dir) throws IOException {
         out.add("");
         out.add(allPass ? "RESULT: ALL PASS" : "RESULT: FAIL");
@@ -256,17 +250,20 @@ public class LogChecker {
         }
     }
 
+    // ms를 HH:MM:SS.mmm로
     static String clock(long ms) {
         if (ms < 0) return "-";
         return String.format("%02d:%02d:%02d.%03d", ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000);
     }
 
+    // 시각과 이전 단계와의 간격
     static String withGap(long ms, long prev) {
         if (ms < 0) return "-";
         if (prev < 0) return clock(ms);
         return clock(ms) + String.format(" (%.2fs)", (ms - prev) / 1000.0);
     }
 
+    // 로그 폴더를 받아 검사
     public static void main(String[] args) throws IOException {
         LogChecker checker = new LogChecker();
         checker.run(Path.of(args.length > 0 ? args[0] : "logs"));

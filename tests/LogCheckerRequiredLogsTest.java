@@ -28,7 +28,6 @@ public class LogCheckerRequiredLogsTest {
             sum += value;
             int worker = k % 10;
             coord.append(line("COORD", "COMMIT", "task=" + k + " e1 by W" + (worker + 1) + " value=" + value));
-            // ACK may be fewer than COMMIT if a crash happens just after a Commit.
             if (k < 999) workers[worker].append(line("WORKER" + (worker + 1), "COMMIT", "ACK " + k + " (committed)"));
         }
         check(sum == 5761455, "fixture prime sum is wrong");
@@ -76,7 +75,7 @@ public class LogCheckerRequiredLogsTest {
             run(checker, dir, false);
         }
         Files.writeString(worker, files.get("Worker1.txt"), StandardCharsets.UTF_8);
-        run(checker, dir, true); // Reusing a checker must clear its previous failure.
+        run(checker, dir, true);
         Path missing = dir.resolve("missing-directory");
         run(checker, missing, false);
         String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();

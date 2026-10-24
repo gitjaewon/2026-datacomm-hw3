@@ -26,7 +26,9 @@ INIT         SUCCESS  listening on {host}:{port}, waiting for 10 workers        
 CONNECT      INFO     new connection from {addr}                                       TCP 연결 수락
 CONNECT      SUCCESS  W{i} registered. peer={ip}:{port}                                HELLO 등록
 CONNECT      WARN     HELLO {i} ignored (after START | out of range | duplicate)       잘못된 HELLO
-CONNECT      WARN     W{i} connection closed (EOF)                                     실행 중 연결이 끊김 (종료 시는 기록 안 함)
+CONNECT      WARN     W{i} connection closed (EOF)                                     실행 중 연결이 끊김 (BYE 뒤에는 TERMINATE로 기록)
+CONNECT      WARN     W{i} connection error: {msg}                                     실행 중 소켓 오류 (그 연결만 닫고 계속)
+CONNECT      WARN     accept failed: {msg}                                             연결 수락 실패
 CONNECT      FAIL     listener error: {msg}                                            Listener 오류
 RING         SUCCESS  10/10 HELLO. RING sent (Wi -> W(i mod 10 + 1))                   10개 등록 후 RING 전송
 RING         SUCCESS  W{i} RING_OK (buddy connected)                                   RING_OK 수신
@@ -38,7 +40,7 @@ HB           INFO     last 5s: W{i}={n}({A|S|D},{x}s) ...                       
 SUSPECT      WARN     W{i} no HB for {x}s                                              HB 3초 이상 없음
 DEAD         INFO     W{d} no HB for {x}s (lastHB={t}). owned=[{k},...] next_alive=W{b} dead_now=[W..]
                                                                                        HB 5초 이상 없음. owned = 그 순간 owner였던 Task(인계받은 것 포함),
-                                                                                       next_alive = 인계 대상, dead_now = 그 순간 DEAD 목록
+                                                                                       next_alive = 인계 대상(없으면 none), dead_now = 그 순간 DEAD 목록
 TAKEOVER     SUCCESS  task={k} epoch {e-1}->{e} owner W{d}->W{b}                       인계 (TAKEOVER 메시지 전송)
 ASSIGN       SUCCESS  task={k} e1 -> W{i}                                              REQ에 배정
 ASSIGN       SUCCESS  task={k} e1 -> W{i} (first task after rejoin)                    재합류 후 첫 배정
@@ -109,7 +111,7 @@ INIT         INFO     W{i} started (pid {pid}, peer port {port})                
 CONNECT      SUCCESS  control connection to W{i}                                       LAUNCHER 전송
 CONNECT      WARN     send to W{i} failed: {err}
 START        INFO     READY {i}
-START        SUCCESS  all READY (10/10) -> t=0. first crash at t={t}                   t0 확정
+START        SUCCESS  all READY (10/10) -> t=0. first crash at t={t}                   t0 확정 (--no-chaos면 ". chaos off")
 CRASH        INFO     #{n} victim=W{i} (random from RUNNING=[..]) D={d}s t={t} down=[..]. next crash at t={t}
                       (마지막은 ". next crash candidate t={t} > 80 -> no more crashes")
 CRASH        INFO     2 workers down [..]. wait for REJOINED                           동시 crash 상한
@@ -127,6 +129,7 @@ TERMINATE    SUCCESS  all workers EXITED. launcher exit
 ====================================================================
 4. LogChecker (실행 후 검증, logs/check_result.txt)
 ====================================================================
+[PASS|FAIL] 0. required logs (12 files)
 [PASS|FAIL] 1. 1000 tasks DONE, sum of commit_count = 1000
 [PASS|FAIL] 2. sum = 5761455
 [PASS|FAIL] 3. launcher CRASH = coordinator DEAD = REJOIN
