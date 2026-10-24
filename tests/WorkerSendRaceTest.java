@@ -67,14 +67,12 @@ public class WorkerSendRaceTest {
             }
             thread.join(3000);
             check(!thread.isAlive() && !sent.get(), "queued send survived CRASH");
-            // Even after rejoin, the previous generation must stay invalid.
             worker.state = Worker.RUNNING;
             check(!worker.sendIfAlive(0, out, "RESULT 0 1 9592"), "old generation sent after rejoin");
             try {
                 receiver.getInputStream().read();
                 throw new AssertionError("CRASHED worker wrote to the socket");
             } catch (SocketTimeoutException expected) {
-                // The connection stays open, with no message written.
             }
         } finally {
             worker.log.close();

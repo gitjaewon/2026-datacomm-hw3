@@ -32,7 +32,6 @@ public class WorkerReceiveRaceTest {
             while (!worker.qLock.hasQueuedThread(receiving) && System.nanoTime() < end) Thread.sleep(1);
             check(worker.qLock.hasQueuedThread(receiving), "receiver did not wait for Queue");
             worker.onCrash();
-            // Model a full rejoin while the old message handler is still delayed.
             worker.stateLock.lock();
             try { worker.state = Worker.REJOINING; }
             finally { worker.stateLock.unlock(); }

@@ -29,7 +29,6 @@ public class Coordinator {
         int commitCount = 0;
     }
 
-    // Socket 하나 = Worker 하나. HELLO 전에는 id = 0
     static class Conn {
         final SocketChannel ch;
         final ReentrantLock sendLock = new ReentrantLock();
@@ -43,7 +42,7 @@ public class Coordinator {
         int state = ALIVE;
         long lastHB;
         int rejoinCount = 0;
-        int hbWindow = 0; // 직전 HB 요약 이후 받은 HB 수
+        int hbWindow = 0;
         Conn conn;
         String peerIp;
         int peerPort;
@@ -57,7 +56,6 @@ public class Coordinator {
         Req(Conn conn, String line) { this.conn = conn; this.line = line; }
     }
 
-    // crash 1건(DEAD 1건)마다 1행 → 최종 요약 표
     static class CrashRec {
         int no, worker, to;
         double lastHB, dead;
@@ -88,7 +86,6 @@ public class Coordinator {
     long total = 0;
     long lastCommitNanos = 0;
 
-    // FD, Monitor가 주기 대기에 쓰는 CV (종료 시 바로 깨우기 위해)
     final ReentrantLock ctlLock = new ReentrantLock();
     final Condition ctlCond = ctlLock.newCondition();
     volatile boolean stopping = false;
@@ -118,14 +115,17 @@ public class Coordinator {
         for (int i = 1; i <= N; i++) workers[i] = new WorkerEntry();
     }
 
+    // START 기준 경과 초
     double rel(long nanos) {
         return (nanos - startNanos) / 1e9;
     }
 
+    // 지금의 START 기준 경과 초
     double relNow() {
         return rel(System.nanoTime());
     }
 
+    // Worker에게 한 줄 전송
     void send(Conn c, String msg) {
         if (c == null) return;
         ByteBuffer b = StandardCharsets.UTF_8.encode(msg + "\n");
@@ -139,6 +139,7 @@ public class Coordinator {
         }
     }
 
+    // Worker 번호로 연결 찾기
     Conn connOf(int i) {
         wtLock.lock();
         try {
@@ -148,6 +149,7 @@ public class Coordinator {
         }
     }
 
+    // Request Queue에 넣고 Dispatcher 하나를 깨움
     void put(Req r) {
         reqLock.lock();
         try {
@@ -158,6 +160,7 @@ public class Coordinator {
         }
     }
 
+    // Request Queue에서 하나 꺼냄 (비었으면 대기)
     Req take() throws InterruptedException {
         reqLock.lock();
         try {
@@ -169,6 +172,7 @@ public class Coordinator {
     }
 
 
+    // Thread 시작, Ring 구성과 START, 종료 대기 후 VERIFY·BYE·join
     void run() throws Exception {
         selector = Selector.open();
         server = ServerSocketChannel.open();
@@ -187,7 +191,6 @@ public class Coordinator {
         threads.add(new Thread(this::monitorLoop, "Monitor"));
         for (Thread t : threads) t.start();
 
-        // HELLO 10개 → RING
         String[] ringMsg = new String[N + 1];
         Conn[] conns = new Conn[N + 1];
         wtLock.lock();
@@ -204,7 +207,6 @@ public class Coordinator {
         for (int i = 1; i <= N; i++) send(conns[i], ringMsg[i]);
         log.ok("RING", "10/10 HELLO. RING sent (Wi -> W(i mod 10 + 1))");
 
-        // RING_OK 10개 → START. START 시각을 모든 lastHB 초기값으로
         wtLock.lock();
         try {
             while (ringOkCount < N) setupCond.await();
@@ -230,7 +232,7 @@ public class Coordinator {
             doneLock.unlock();
         }
 
-        judging = false; // VERIFY 이후 FD는 판정하지 않음
+        judging = false;
         verify();
 
         byeSent = true;
@@ -259,6 +261,7 @@ public class Coordinator {
         log.close();
     }
 
+    // 1000개 DONE, commit_count, 합계 검증
     void verify() {
         long sum = 0;
         int done = 0, commits = 0, dbl = 0;
@@ -290,6 +293,7 @@ public class Coordinator {
         printSummary(sum, done, commits, dbl, pass);
     }
 
+    // 최종 요약과 crash별 지표 출력
     void printSummary(long sum, int done, int commits, int dbl, boolean pass) {
         double elapsed = rel(lastCommitNanos);
         List<String> lines = new ArrayList<>();
@@ -316,6 +320,7 @@ public class Coordinator {
         for (String l : lines) log.info("VERIFY", l);
     }
 
+    // 숫자 목록을 쉼표로 이어 붙임
     static String joinInts(List<Integer> list) {
         StringBuilder sb = new StringBuilder();
         for (int x : list) {
@@ -326,6 +331,7 @@ public class Coordinator {
     }
 
 
+    // select로 Socket 감시
     void listenerLoop() {
         ByteBuffer rb = ByteBuffer.allocate(8192);
         try {
@@ -336,7 +342,6 @@ public class Coordinator {
                     SelectionKey key = it.next();
                     it.remove();
                     if (!key.isValid()) continue;
-                    // 연결 하나에서 난 오류로 Listener 전체가 멈추면 안 됨
                     try {
                         handleKey(key, rb);
                     } catch (IOException e) {
@@ -359,6 +364,7 @@ public class Coordinator {
         }
     }
 
+    // 연결 수락, 수신 데이터를 줄 단위로 잘라 HB는 직접, 나머지는 Queue로
     void handleKey(SelectionKey key, ByteBuffer rb) throws IOException {
         if (key.isAcceptable()) {
             SocketChannel ch = server.accept();
@@ -390,7 +396,7 @@ public class Coordinator {
         }
     }
 
-    // HB는 Queue를 거치지 않고 Listener가 직접 처리
+    // lastHB 갱신, SUSPECT면 ALIVE로
     void onHB(Conn c) {
         int i = c.id;
         if (i == 0) return;
@@ -412,6 +418,7 @@ public class Coordinator {
     }
 
 
+    // Dispatcher: Queue에서 꺼내 처리
     void dispatcherLoop(int id) {
         try {
             while (true) {
@@ -427,6 +434,7 @@ public class Coordinator {
         }
     }
 
+    // 메시지 종류별로 처리 함수 호출
     void handle(Conn c, String line) {
         String[] t = line.split(" ");
         switch (t[0]) {
@@ -439,6 +447,7 @@ public class Coordinator {
         }
     }
 
+    // HELLO: Worker 등록
     void onHello(Conn c, int i, String ip, int peerPort) {
         String err = null;
         wtLock.lock();
@@ -461,6 +470,7 @@ public class Coordinator {
         else log.ok("CONNECT", "W" + i + " registered. peer=" + ip + ":" + peerPort);
     }
 
+    // RING_OK 개수 세기
     void onRingOk(Conn c) {
         int i = c.id;
         if (i == 0) return;
@@ -477,7 +487,7 @@ public class Coordinator {
         log.ok("RING", "W" + i + " RING_OK (buddy connected)");
     }
 
-    // 확인(DEAD 아님)과 배정을 WT Lock 한 구간에서
+    // REQ: DEAD 확인과 PENDING 배정을 한 번에 하고 ASSIGN 또는 NO_TASK
     void onReq(Conn c) {
         int i = c.id;
         if (i == 0) return;
@@ -530,6 +540,7 @@ public class Coordinator {
         log.ok("ASSIGN", "task=" + k + " e1 -> W" + i + (firstAfterRejoin ? " (first task after rejoin)" : ""));
     }
 
+    // RESULT: DEAD/DONE/EPOCH 확인 후 Commit 또는 REJECT_STALE
     void onResult(Conn c, int k, int e, int v) {
         int sender = c.id;
         if (sender == 0) return;
@@ -607,7 +618,6 @@ public class Coordinator {
         }
         log.ok("COMMIT", "task=" + k + " e" + e + " by W" + sender + " value=" + v + " commit_count=" + cc + " (done " + count + "/1000)");
 
-        // 마지막 Commit의 ACK와 로그가 나간 뒤에 Main을 깨운다
         if (count == TASKS) {
             doneLock.lock();
             try {
@@ -619,6 +629,7 @@ public class Coordinator {
         }
     }
 
+    // REJOIN: DEAD면 ALIVE로 바꾸고 WELCOME, 아니면 RETRY_LATER
     void onRejoin(Conn c) {
         int i = c.id;
         if (i == 0) return;
@@ -653,6 +664,7 @@ public class Coordinator {
     }
 
 
+    // ms만큼 대기 (종료 시 바로 깨어남)
     boolean waitTick(long ms) {
         ctlLock.lock();
         try {
@@ -666,6 +678,7 @@ public class Coordinator {
         }
     }
 
+    // START 될 때까지 대기
     boolean waitStart() {
         ctlLock.lock();
         try {
@@ -678,6 +691,7 @@ public class Coordinator {
         }
     }
 
+    // d 다음 순서의 첫 ALIVE (없으면 첫 SUSPECT)
     int nextAlive(int d) {
         for (int j = 1; j < N; j++) {
             int b = (d - 1 + j) % N + 1;
@@ -690,7 +704,7 @@ public class Coordinator {
         return -1;
     }
 
-    // Task Lock을 번호 오름차순으로 하나씩 잡는다. b < 0이면 owner를 바꾸지 않고 목록만 돌려줌
+    // d가 owner인 ASSIGNED Task를 b에게 넘김 (epoch + 1)
     List<Integer> moveTasks(int d, int b, List<int[]> moved) {
         List<Integer> owned = new ArrayList<>();
         for (int k = 0; k < TASKS; k++) {
@@ -712,13 +726,14 @@ public class Coordinator {
         return owned;
     }
 
+    // Failure Detector: 1초마다 SUSPECT/DEAD 판정과 TAKEOVER
     void fdLoop() {
         if (!waitStart()) return;
         while (waitTick(1000)) {
             if (!judging) continue;
             List<String> suspectLogs = new ArrayList<>();
             List<String> deadLogs = new ArrayList<>();
-            List<int[]> moved = new ArrayList<>();    // {b, k, e, d}
+            List<int[]> moved = new ArrayList<>();
             List<CrashRec> newRecs = new ArrayList<>();
             int deadNow = 0;
             long now = System.nanoTime();
@@ -788,6 +803,7 @@ public class Coordinator {
     }
 
 
+    // 5초마다 POOL과 HB 요약 로그
     void monitorLoop() {
         if (!waitStart()) return;
         while (waitTick(5000)) {
@@ -827,6 +843,7 @@ public class Coordinator {
         }
     }
 
+    // 실행 인자 읽고 시작
     public static void main(String[] args) throws Exception {
         String host = "0.0.0.0";
         int port = 8000;

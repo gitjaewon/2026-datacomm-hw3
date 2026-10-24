@@ -2,9 +2,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class Primes {
-    // 10^8의 제곱근 = 10000 이하 소수만 있으면 됨
     static final int[] SMALL = makeSmallPrimes(10000);
 
+    // limit 이하 소수 목록
     static int[] makeSmallPrimes(int limit) {
         boolean[] composite = new boolean[limit + 1];
         List<Integer> list = new ArrayList<>();
@@ -18,6 +18,7 @@ public class Primes {
         return arr;
     }
 
+    // Task k, step s의 시작 수
     static int stepLo(int k, int s) {
         return k * 100000 + (s - 1) * 10000 + 1;
     }
@@ -36,12 +37,13 @@ public class Primes {
         return cnt;
     }
 
+    // Task k, step s의 소수 개수
     static int count(int k, int s) {
         int lo = stepLo(k, s);
         return countRange(lo, lo + 9999);
     }
 
-    // java Primes 로 검증값 확인
+    // 검증 값 출력
     public static void main(String[] args) {
         System.out.println("small primes: " + SMALL.length + ", last = " + SMALL[SMALL.length - 1]);
         System.out.println("count(0,1) = " + count(0, 1));

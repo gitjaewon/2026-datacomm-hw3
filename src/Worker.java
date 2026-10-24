@@ -37,7 +37,6 @@ public class Worker {
         }
     }
 
-    // 소켓 하나에 쓰는 쪽. 여러 Thread가 같이 쓰므로 Lock
     static class Out {
         final Socket sock;
         final BufferedWriter w;
@@ -48,6 +47,7 @@ public class Worker {
             w = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8));
         }
 
+        // 한 줄 전송
         void send(String msg) throws IOException {
             lock.lock();
             try {
@@ -68,12 +68,10 @@ public class Worker {
     final int stepDelay;
     final Log log;
 
-    // Lock 순서: qLock -> stateLock -> storeLock
     final ReentrantLock stateLock = new ReentrantLock();
     final Condition stateCond = stateLock.newCondition();
     int state = CONNECTING;
     int crashGen = 0;
-    // 송신 중에는 공유 상태 Lock을 놓는다. CRASH는 승인된 송신이 끝난 뒤 확정한다.
     boolean crashPending = false;
     int activeSends = 0;
     boolean stopping = false;
@@ -93,10 +91,8 @@ public class Worker {
     int buddyId;
     ServerSocket peerServer;
 
-    // 현재 계산 중인 Task (CRASH 로그용)
     volatile String current = "none";
 
-    // 통계 (stateLock으로 보호)
     int ckptSent = 0, ckptRecv = 0, ckptDropped = 0, ackCount = 0, rejectCount = 0, crashCount = 0;
     int takeoverCount = 0, resultCount = 0;
     int ckptSentWindow = 0, ckptRecvWindow = 0;
@@ -111,6 +107,7 @@ public class Worker {
         log = new Log("WORKER" + id, logPath, false);
     }
 
+    // 접속될 때까지 0.5초마다 재시도
     static Socket connectRetry(String host, int port) throws InterruptedException {
         while (true) {
             try {
@@ -124,10 +121,10 @@ public class Worker {
         }
     }
 
+    // Peer 포트 열고 Coordinator 접속, Thread 시작
     void run() throws Exception {
         log.info("INIT", String.format("worker %d start. coord=%s:%d peer=%s:%d step_delay=%dms small_primes=%d",
                 id, coordHost, coordPort, peerIp, peerPort, stepDelay, Primes.SMALL.length));
-        // Peer 포트를 먼저 열고 Coordinator에 접속
         peerServer = new ServerSocket();
         peerServer.bind(new InetSocketAddress(InetAddress.getByName(peerIp), peerPort));
         Thread ps = new Thread(this::peerServerLoop, "PeerServer");
@@ -149,16 +146,17 @@ public class Worker {
         controlRecvLoop(new BufferedReader(new InputStreamReader(cs.getInputStream(), StandardCharsets.UTF_8)));
     }
 
+    // Coordinator에게 전송 (실패하면 종료)
     void sendCoord(String msg) {
         try {
             coord.send(msg);
         } catch (IOException e) {
-            // Coordinator 연결 오류는 치명적
             log.fail("CONNECT", "coordinator send failed: " + e.getMessage() + ". exit");
             System.exit(1);
         }
     }
 
+    // Launcher에게 전송
     void sendLauncher(String msg) {
         Out l;
         stateLock.lock();
@@ -175,7 +173,7 @@ public class Worker {
         }
     }
 
-    // Socket 송신 차례를 얻은 뒤 승인한다. CRASH 대기 중에는 새 송신을 승인하지 않는다.
+    // RUNNING이고 crash 세대가 같을 때만 전송
     boolean sendIfAlive(int gen, Out target, String msg) {
         target.lock.lock();
         try {
@@ -210,6 +208,7 @@ public class Worker {
         }
     }
 
+    // START와 Launcher 연결이 모두 되면 READY 전송
     void checkReady() {
         boolean send = false;
         stateLock.lock();
@@ -227,6 +226,7 @@ public class Worker {
         }
     }
 
+    // 현재 상태
     int getState() {
         stateLock.lock();
         try {
@@ -236,6 +236,7 @@ public class Worker {
         }
     }
 
+    // 메시지를 받은 시점의 crash 세대 (crash 중이면 -1)
     int messageGeneration() {
         stateLock.lock();
         try {
@@ -245,12 +246,12 @@ public class Worker {
         }
     }
 
-    // stateLock 안에서만 호출: 수신 뒤 crash/rejoin을 거친 메시지도 버린다.
+    // 받은 뒤 crash/rejoin이 없었는지 확인
     boolean acceptsMessage(int gen) {
         return gen >= 0 && state != CRASHED && crashGen == gen;
     }
 
-    // Coordinator 메시지 처리
+    // Coordinator 메시지 수신
     void controlRecvLoop(BufferedReader in) {
         try {
             String line;
@@ -263,7 +264,7 @@ public class Worker {
                     return;
                 }
                 int gen = messageGeneration();
-                if (gen < 0) continue; // crash 중에는 읽고 버림
+                if (gen < 0) continue;
                 try {
                     switch (t[0]) {
                         case "RING" -> onRing(Integer.parseInt(t[1]), t[2], Integer.parseInt(t[3]));
@@ -290,6 +291,7 @@ public class Worker {
         System.exit(1);
     }
 
+    // RING: Buddy에 연결하고 RING_OK
     void onRing(int j, String ip, int port) throws InterruptedException, IOException {
         stateLock.lock();
         try {
@@ -305,6 +307,7 @@ public class Worker {
         log.ok("RING", "buddy W" + j + " (" + ip + ":" + port + ") connected. RING_OK " + id);
     }
 
+    // START: RUNNING으로 바꾸고 HB·Compute 시작
     void onStart() {
         stateLock.lock();
         try {
@@ -328,13 +331,14 @@ public class Worker {
         onAssign(k, e, messageGeneration());
     }
 
+    // ASSIGN: 로컬 Queue에 추가
     void onAssign(int k, int e, int gen) {
         qLock.lock();
         stateLock.lock();
         try {
             if (!acceptsMessage(gen)) return;
             localQ.add(new Item(k, e, 1, 0));
-            requested = false; // 안 내리면 다음 REQ를 못 보냄
+            requested = false;
             qCond.signalAll();
         } finally {
             stateLock.unlock();
@@ -347,6 +351,7 @@ public class Worker {
         onTakeover(k, e, from, messageGeneration());
     }
 
+    // TAKEOVER: CKPT가 있으면 다음 step부터 Queue에 추가
     void onTakeover(int k, int e, int from, int gen) {
         Ckpt ck;
         qLock.lock();
@@ -378,6 +383,7 @@ public class Worker {
         onAck(k, messageGeneration());
     }
 
+    // ACK 기록
     void onAck(int k, int gen) {
         boolean known;
         qLock.lock();
@@ -401,6 +407,7 @@ public class Worker {
         onReject(k, reason, messageGeneration());
     }
 
+    // REJECT_STALE 기록
     void onReject(int k, String reason, int gen) {
         boolean known;
         qLock.lock();
@@ -424,6 +431,7 @@ public class Worker {
         onNoTask(messageGeneration());
     }
 
+    // NO_TASK: 이후 REQ 안 보냄
     void onNoTask(int gen) {
         qLock.lock();
         stateLock.lock();
@@ -442,6 +450,7 @@ public class Worker {
         onWelcome(messageGeneration());
     }
 
+    // WELCOME: RUNNING으로 돌아가고 REJOINED 전송
     void onWelcome(int gen) {
         stateLock.lock();
         try {
@@ -461,6 +470,7 @@ public class Worker {
         }
     }
 
+    // RETRY_LATER: 2초 뒤 아직 REJOINING이면 REJOIN 재전송
     void onRetryLater() {
         log.warn("REJOIN", "RETRY_LATER. resend REJOIN after 2s");
         Thread t = new Thread(() -> {
@@ -478,6 +488,7 @@ public class Worker {
         t.start();
     }
 
+    // BYE: 요약 로그 남기고 종료
     void onBye() {
         stateLock.lock();
         try {
@@ -512,6 +523,7 @@ public class Worker {
         System.exit(0);
     }
 
+    // Socket 닫기
     static void closeQuietly(Out o) {
         if (o == null) return;
         try {
@@ -520,7 +532,7 @@ public class Worker {
         }
     }
 
-    // Peer 포트: 선행 Worker의 CKPT 연결, Launcher 제어 연결
+    // Peer 포트 연결 수락
     void peerServerLoop() {
         while (true) {
             try {
@@ -535,6 +547,7 @@ public class Worker {
         }
     }
 
+    // 선행 Worker의 CKPT 연결 또는 Launcher 제어 연결 처리
     void peerConn(Socket s) {
         try {
             BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
@@ -572,7 +585,6 @@ public class Worker {
                 }
             }
         } catch (IOException e) {
-            // 연결 끊김. Launcher 종료 등
         }
     }
 
@@ -580,6 +592,7 @@ public class Worker {
         onCkpt(k, e, s, partial, messageGeneration());
     }
 
+    // CKPT: (epoch, step)이 더 크면 Store에 저장
     void onCkpt(int k, int e, int s, int partial, int gen) {
         stateLock.lock();
         try {
@@ -601,13 +614,13 @@ public class Worker {
         }
     }
 
+    // CRASH: Queue·Store·플래그를 지우고 침묵
     void onCrash() {
         int qn, sn;
         stateLock.lock();
         try {
             if (state == CRASHED || crashPending) return;
             crashPending = true;
-            // await는 stateLock을 놓으므로 송신 완료와 HB/Compute 상태 확인을 막지 않는다.
             while (activeSends > 0) stateCond.awaitUninterruptibly();
             state = CRASHED;
             crashGen++;
@@ -636,6 +649,7 @@ public class Worker {
         log.warn("CRASH", "CRASH from launcher. cleared current=" + current + ", queue=" + qn + ", store=" + sn + ". silent (connections kept)");
     }
 
+    // RESTART: REJOINING으로 바꾸고 REJOIN 전송
     void onRestart() {
         stateLock.lock();
         try {
@@ -649,7 +663,7 @@ public class Worker {
         log.info("REJOIN", "REJOIN " + id + " sent");
     }
 
-    // RUNNING일 때만 1초마다 HB. 10초마다 CKPT 건수 요약
+    // RUNNING일 때 1초마다 HB, 10초마다 CKPT 건수 로그
     void heartbeatLoop() {
         int tick = 0;
         while (true) {
@@ -686,7 +700,7 @@ public class Worker {
         }
     }
 
-    // Task를 꺼내는 순간의 crashGen을 같이 돌려준다
+    // Queue에서 Task를 꺼냄, 비었으면 REQ 보내고 대기
     Object[] takeTask() throws InterruptedException {
         while (true) {
             stateLock.lock();
@@ -719,6 +733,7 @@ public class Worker {
         }
     }
 
+    // step 계산, step마다 CKPT, 끝나면 RESULT
     void computeLoop() {
         try {
             while (true) {
@@ -755,7 +770,6 @@ public class Worker {
                     stateLock.unlock();
                     qLock.unlock();
                 }
-                // ACK가 먼저 찍히지 않게 로그를 먼저 남긴다
                 log.ok("RESULT", "task=" + it.k + " e" + it.e + " value=" + partial
                         + (it.startStep > 1 ? " (resumed from step " + it.startStep + ")" : ""));
                 if (sendIfAlive(gen, coord, "RESULT " + it.k + " " + it.e + " " + partial)) {
@@ -779,6 +793,7 @@ public class Worker {
         }
     }
 
+    // 현재 crash 세대
     int crashGenNow() {
         stateLock.lock();
         try {
@@ -788,6 +803,7 @@ public class Worker {
         }
     }
 
+    // CKPT 전송 수 세기
     void countCkptSent() {
         stateLock.lock();
         try {
@@ -798,6 +814,7 @@ public class Worker {
         }
     }
 
+    // 실행 인자 읽고 시작
     public static void main(String[] args) throws Exception {
         int id = 0;
         String coordAddr = "127.0.0.1:8000";

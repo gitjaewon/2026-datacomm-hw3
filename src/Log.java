@@ -8,7 +8,6 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 
-// [HH:MM:SS.mmm] NODE | EVENT | STATUS | message  (시간대 KST)
 public class Log {
     static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
     static final ZoneId KST = ZoneId.of("Asia/Seoul");
@@ -25,10 +24,12 @@ public class Log {
         out = new PrintWriter(new OutputStreamWriter(new FileOutputStream(f), StandardCharsets.UTF_8));
     }
 
+    // 현재 시각 (KST)
     static String now() {
         return ZonedDateTime.now(KST).format(TIME);
     }
 
+    // 로그 한 줄 기록
     synchronized void write(String event, String status, String msg) {
         String line = String.format("[%s] %s | %-8s | %-7s | %s", now(), node, event, status, msg);
         out.println(line);
@@ -41,6 +42,7 @@ public class Log {
     void warn(String event, String msg) { write(event, "WARN", msg); }
     void fail(String event, String msg) { write(event, "FAIL", msg); }
 
+    // 파일 닫기
     synchronized void close() {
         out.close();
     }
